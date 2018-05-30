@@ -1,0 +1,489 @@
+#!/usr/bin/env php
+<?php
+/**********************************************************************
+ *                                                                    *
+ *                            ACME-DNS-NC                             *
+ * ------------------------------------------------------------------ *
+ *                        v0.1.0 (2018-05-30)                         *
+ *                                                                    *
+ * Author:  Christian Schrötter <cs@fnx.li>                           *
+ * License: GNU GENERAL PUBLIC LICENSE (Version 3)                    *
+ * Website: https://github.com/froonix/acme-dns-nc                    *
+ *                                                                    *
+ **********************************************************************/
+
+set_error_handler('error_handler');
+error_reporting(-1);
+
+if(version_compare(PHP_VERSION, '5.5.0', '<'))
+{
+	throw new Exception('PHP 5.5.0 or newer is required');
+}
+else if(!extension_loaded('soap'))
+{
+	throw new Exception('Required module not found: SOAP');
+}
+else if(PHP_SAPI !== 'cli')
+{
+	throw new Exception('This script is for CLI execution only');
+}
+
+if(isset($argv[1]) && ($argv[1] === '--add' || $argv[1] === '--del'))
+{
+	if(isset($argv[2]) && $argv[1] == '--del')
+	{
+		# TODO: Too many args possible
+		$argv = [$argv[0], $argv[2]];
+	}
+	else if(!isset($argv[3]))
+	{
+		$argv = [$argv[0]];
+	}
+	else
+	{
+		unset($argv[1]);
+	}
+
+	$argv = array_values($argv);
+	$argc = count($argv);
+}
+
+if($argc < 2 || $argc > 3)
+{
+	print("[ACME-DNS-NC] dns-01 challenge helper script for netcup.de CCP-DNS-API\n");
+	printf("Usage: %s [--{add|del}] <hostname> [<txtvalue>]\n\n", $argv[0]);
+	print("_acme-challenge will be prepended to the hostname. Subdomains are fully supported.\n");
+	print("Without a txtvalue, the corresponding record will be deleted! TTL is set to 300.\n");
+	print("There are --add/--del arguments too. They are only supported as first argument!\n\n");
+	print("It's required to place a file called .nc-ccp.ini in your home directory. Example configuration below:\n\n");
+	print("  username   = \"your customer ID\"\n  password   = \"your API password\"\n  token      = \"your API key\"\n  persistent = <true|false>\n\n");
+	print("Required:  PHP 5.5 or newer and SOAP module.\n");
+	print("BT & Wiki: https://github.com/froonix/acme-dns-nc\n");
+	exit(1);
+}
+
+$hostname    = strtolower($argv[1]);
+$recordvalue = isset($argv[2]) ? $argv[2] : null;
+
+# TODO: Read path from ENV var?
+# ...
+
+$ini = parse_ini_file($_SERVER['HOME'] . '/.nc-ccp.ini');
+$ini['persistent'] = (isset($ini['persistent']) && in_array(strtolower($ini['persistent']), ['1', 'true', 'on'], true));
+
+// DON'T MOVE THIS PART INTO THE CLASS!
+openlog(strtoupper(basename(__file__)), LOG_PID, LOG_USER);
+
+$ncccp = new NCCCP();
+$ncccp->setAuthData($ini['username'], $ini['password'], $ini['token']);
+$ncccp->setSessionStorage($ini['persistent']);
+$ncccp->login();
+
+// Split domain name to subdomains.
+$hostparts = explode('.', $hostname);
+$fulldomain = array_pop($hostparts);
+$recordname = null;
+
+while(($nextpart = array_pop($hostparts)) !== null)
+{
+	$fulldomain = sprintf('%s.%s', $nextpart, $fulldomain);
+	if(($domain = $ncccp->getZone($fulldomain, true)) !== false)
+	{
+		// We found the domain! Prepend challenge name.
+		array_unshift($hostparts, '_acme-challenge');
+		$recordname = implode('.', $hostparts);
+		break;
+	}
+}
+
+if($recordname === null)
+{
+	throw new Exception(sprintf('Domain %s does not exist in this account', $hostname));
+}
+
+// Fetch all existing records.
+$records = $ncccp->getRecords($fulldomain);
+
+$oldrecords = [];
+$newrecords = [];
+$c = count($records);
+for($i = 0; $i < $c; $i++)
+{
+	if(isset($records[$i]->type, $records[$i]->hostname) && strtoupper($records[$i]->type) === 'TXT' && strtolower($records[$i]->hostname) === $recordname)
+	{
+		$oldrecords[] = $records[$i];
+	}
+}
+unset($records);
+
+$c = count($oldrecords);
+if($recordvalue === null)
+{
+	if(isset($oldrecords[0]))
+	{
+		if($c > 1)
+		{
+			// There are multiple records! This is strange, but we can delete all of them.
+			fwrite(STDERR, "Warning: Multiple records found! Deleting all of them.\n");
+		}
+
+		$newrecords = $oldrecords;
+		for($i = 0; $i < $c; $i++)
+		{
+			// The record exists, we can delete it now.
+			$newrecords[$i]->deleterecord = true;
+		}
+	}
+}
+else
+{
+	if($c > 1)
+	{
+		// There are multiple records! This is strange. Because we can't update
+		// all of them, let's delete it first and create a new one afterwards.
+		fwrite(STDERR, "Warning: Multiple records found! Deleting all of them.\n");
+		fwrite(STDERR, "         A new TXT record will be created afterwards.\n");
+
+		$newrecords = $oldrecords;
+		for($i = 0; $i < $c; $i++)
+		{
+			$newrecords[$i]->deleterecord = true;
+		}
+
+		$force = true;
+	}
+	else
+	{
+		$force = false;
+	}
+
+	if($force || !isset($oldrecords[0]->id))
+	{
+		// The record does not exist. We have to create it with challenge data.
+		$newrecords[] = (object) ['hostname' => $recordname, 'destination' => $recordvalue, 'type' => 'TXT'];
+	}
+	else
+	{
+		// The record already exists. Let's update the challenge data.
+		$newrecords = $oldrecords; $newrecords[0]->destination = $recordvalue;
+	}
+}
+unset($force, $c, $i);
+
+if(count($newrecords))
+{
+	$ncccp->updateRecords($fulldomain, $newrecords);
+}
+
+// Close API...
+unset($ncccp);
+
+// and quit...
+exit(0);
+
+########################################################################
+#                            EXTERNAL LIBS                             #
+########################################################################
+
+// Convert PHP errors to exceptions. This is very usefull!
+function error_handler($severity, $message, $file, $line)
+{
+	if(!(error_reporting() & $severity))
+	{
+		return;
+	}
+
+	throw new ErrorException($message, 0, $severity, $file, $line);
+}
+
+// Minimal API implementation for netcup CCP
+// by Christian Schrötter <cs@fnx.li>
+class NCCCP extends SoapClient
+{
+	private $username   = null;
+	private $password   = null;
+	private $token      = null;
+	private $request    = null;
+	private $persistent = null;
+	private $sid        = null;
+
+	public function __construct()
+	{
+		parent::__construct('https://ccp.netcup.net/run/webservice/servers/endpoint.php?WSDL',
+		[
+			'cache_wsdl'  => WSDL_CACHE_DISK, // <-- PHP Bug #72937
+			'ssl_method'  => SOAP_SSL_METHOD_TLS,
+			'compression' => true,
+			'keep_alive'  => true,
+			'exceptions'  => true,
+		]);
+
+		// Not required, but maybe usefull to find bugs.
+		$this->request = sprintf('FNX%d', getmypid());
+	}
+
+	public function __destruct()
+	{
+		try
+		{
+			if(!$this->persistent)
+			{
+				$this->logout();
+			}
+		}
+		catch(Exception $e)
+		{
+			// Ignore all errors, it does not matter.
+			// Otherwise we would get strange errors!
+		}
+	}
+
+	private function resetSessionStorage()
+	{
+		$_ = $this->persistent;
+		$this->setSessionStorage();
+
+		if($_)
+		{
+			$this->setSessionStorage(true);
+		}
+	}
+
+	public function setSessionStorage($_ = false)
+	{
+		if($this->username === null)
+		{
+			throw new LogicException(sprintf('Could not set persistent session storage without calling %1$s::setAuthData() before', __class__));
+		}
+
+		$this->persistent = sprintf('%s/%s-%s-%u.sid', sys_get_temp_dir(), __class__, md5(sprintf('%s:%s', $this->username, $this->token)), (function_exists('posix_getuid') ? posix_getuid() : 0));
+
+		if($_)
+		{
+			clearstatcache();
+
+			if(!file_exists($this->persistent))
+			{
+				if(!touch($this->persistent))
+				{
+					throw new Exception(sprintf('Could not enable persistent session storage: %s', $this->persistent));
+				}
+			}
+
+			if(fileperms($this->persistent) !== 0600)
+			{
+				if(!chmod($this->persistent, 0600))
+				{
+					throw new Exception(sprintf('Could not enable persistent session storage: %s', $this->persistent));
+				}
+			}
+
+			if($this->sid = file_get_contents($this->persistent))
+			{
+				$this->sid = trim($this->sid);
+			}
+		}
+		else
+		{
+			$this->destroySessionStorage();
+		}
+	}
+
+	private function destroySessionStorage()
+	{
+		clearstatcache();
+
+		if($this->persistent && file_exists($this->persistent))
+		{
+			unlink($this->persistent);
+		}
+
+		$this->persistent = false;
+		$this->sid        = null;
+	}
+
+	public function setAuthData($username, $password, $token)
+	{
+		$this->username = (string) $username;
+		$this->password = (string) $password;
+		$this->token    = (string) $token;
+	}
+
+	public function doRequest($method, $args = [], $return = false)
+	{
+		// Cleanup args...
+		$safe_args = $args;
+		unset($safe_args['apikey']);
+		unset($safe_args['apipassword']);
+		unset($safe_args['clientrequestid']);
+		unset($safe_args['apisessionid']);
+
+		// Send action with cleaned arguments to syslog.
+		syslog(LOG_INFO, sprintf('%s: %s', $method, json_encode($safe_args)));
+
+		try
+		{
+			$result = $this->__soapCall($method, $args);
+
+			if(!isset($result->statuscode) || $result->statuscode !== 2000)
+			{
+				if($return)
+				{
+					return false;
+				}
+				else
+				{
+					throw new RuntimeException((isset($result->status, $result->longmessage) ? sprintf('%s: %s', $result->status, $result->longmessage) : 'SOAP request failed'), (isset($result->statuscode) ? $result->statuscode : 0));
+				}
+			}
+			else if(isset($result->responsedata) && is_object($result->responsedata))
+			{
+				return $result->responsedata;
+			}
+			else
+			{
+				return null;
+			}
+		}
+		catch(SoapFault $e)
+		{
+			# Unknown or invalid username: Uncaught SoapFault exception
+			# [SOAP-ENV:Server] Call to a member function getId() on a non-object
+			# ...
+
+			if($return)
+			{
+				return false;
+			}
+			else
+			{
+				throw $e;
+			}
+		}
+	}
+
+	public function logout()
+	{
+		if(!$this->sid)
+		{
+			return;
+		}
+
+		$this->doRequest('logout',
+		[
+			'customernumber'  => $this->username,
+			'apikey'          => $this->token,
+			'apisessionid'    => $this->sid,
+			'clientrequestid' => $this->request,
+		]);
+
+		$this->destroySessionStorage();
+	}
+
+	public function login()
+	{
+		if($this->persistent && $this->sid)
+		{
+			try
+			{
+				$this->doRequest('poll',
+				[
+					'messagecount'    => 1,
+					'customernumber'  => $this->username,
+					'apikey'          => $this->token,
+					'apisessionid'    => $this->sid,
+				]);
+				return;
+			}
+			catch(Exception $e)
+			{
+				# TODO: Check for code 4004/4001?
+				# ...
+
+				$this->resetSessionStorage();
+			}
+		}
+
+		$result = $this->doRequest('login',
+		[
+			'customernumber'  => $this->username,
+			'apikey'          => $this->token,
+			'apipassword'     => $this->password,
+			'clientrequestid' => $this->request,
+		]);
+
+		if(!isset($result->apisessionid) || !$result->apisessionid)
+		{
+			throw new RuntimeException('Login failed (no SID in response)');
+		}
+
+		$this->sid = (string) $result->apisessionid;
+
+		if($this->persistent)
+		{
+			file_put_contents($this->persistent, $this->sid . "\n", LOCK_EX);
+		}
+	}
+
+	public function getZone($domain, $return = false)
+	{
+		return $this->doRequest('infoDnsZone',
+		[
+			'domainname'      => $domain,
+			'customernumber'  => $this->username,
+			'apikey'          => $this->token,
+			'apisessionid'    => $this->sid,
+			'clientrequestid' => $this->request,
+		], $return);
+	}
+
+	public function getRecords($domain, $return = false)
+	{
+		try
+		{
+			$result = $this->doRequest('infoDnsRecords',
+			[
+				'domainname'      => $domain,
+				'customernumber'  => $this->username,
+				'apikey'          => $this->token,
+				'apisessionid'    => $this->sid,
+				'clientrequestid' => $this->request,
+			], $return);
+
+			if(isset($result->dnsrecords) && is_array($result->dnsrecords))
+			{
+				return array_values($result->dnsrecords);
+			}
+		}
+		catch(SoapFault $e)
+		{
+			// SoapFault: [5029] Can not get DNS records for zone. Die Zone <...> enthält keine DNS records.
+			if(!isset($e->faultcode, $e->faultstring) || ((int) $e->faultcode !== 5029 && (int) $e->faultstring !== 5029))
+			{
+				throw $e;
+			}
+		}
+
+		return [];
+	}
+
+	public function updateRecords($domain, $records, $return = false)
+	{
+		if(!is_array($records))
+		{
+			throw new InvalidArgumentException();
+		}
+
+		return $this->doRequest('updateDnsRecords',
+		[
+			'domainname'      => $domain,
+			'customernumber'  => $this->username,
+			'apikey'          => $this->token,
+			'apisessionid'    => $this->sid,
+			'clientrequestid' => $this->request,
+			'dnsrecordset'    => (object) ['dnsrecords' => $records],
+		], $return);
+	}
+}
+
+?>
