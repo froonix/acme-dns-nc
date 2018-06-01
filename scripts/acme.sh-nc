@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+
+dns_fnx_nc_add()
+{
+	"$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/acme-dns-nc" --add "$1" "$2"
+}
+
+dns_fnx_nc_rm()
+{
+	"$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/acme-dns-nc" --del "$1" "$2"
+}

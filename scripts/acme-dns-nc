@@ -4,7 +4,7 @@
  *                                                                    *
  *                            ACME-DNS-NC                             *
  * ------------------------------------------------------------------ *
- *                        v0.1.0 (2018-05-30)                         *
+ *                        v0.2.0 (2018-06-01)                         *
  *                                                                    *
  * Author:  Christian Schrötter <cs@fnx.li>                           *
  * License: GNU GENERAL PUBLIC LICENSE (Version 3)                    *
@@ -28,42 +28,66 @@ else if(PHP_SAPI !== 'cli')
 	throw new Exception('This script is for CLI execution only');
 }
 
-if(isset($argv[1]) && ($argv[1] === '--add' || $argv[1] === '--del'))
-{
-	if(isset($argv[2]) && $argv[1] == '--del')
-	{
-		# TODO: Too many args possible
-		$argv = [$argv[0], $argv[2]];
-	}
-	else if(!isset($argv[3]))
-	{
-		$argv = [$argv[0]];
-	}
-	else
-	{
-		unset($argv[1]);
-	}
+$mode = null;
+$base = array_shift($argv);
 
-	$argv = array_values($argv);
-	$argc = count($argv);
+if(isset($argv[0]) && substr($argv[0], 0, 2) === '--')
+{
+	$_ = substr(array_shift($argv), 2);
+	if(in_array($_, ['add', 'del']))
+	{
+		$mode = $_;
+		unset($_);
+	}
+}
+else if(isset($argv[1]))
+{
+	$mode = 'add';
+}
+else if(isset($argv[0]))
+{
+	$mode = 'del';
 }
 
-if($argc < 2 || $argc > 3)
+$hostname    = array_shift($argv);
+$recordvalue = array_shift($argv);
+
+if(count($argv))
+{
+	$mode = null;
+}
+
+if($mode === null || ($mode === 'add' && ($hostname === null || $recordvalue === null)) || ($mode === 'del' && $hostname === null))
 {
 	print("[ACME-DNS-NC] dns-01 challenge helper script for netcup.de CCP-DNS-API\n");
-	printf("Usage: %s [--{add|del}] <hostname> [<txtvalue>]\n\n", $argv[0]);
+	printf("Usage: %s [--{add|del}] <hostname> [<txtvalue>]\n\n", $base);
 	print("_acme-challenge will be prepended to the hostname. Subdomains are fully supported.\n");
-	print("Without a txtvalue, the corresponding record will be deleted! TTL is set to 300.\n");
-	print("There are --add/--del arguments too. They are only supported as first argument!\n\n");
+	print("Without a txtvalue, the corresponding record will be deleted! TTL not supported.\n\n");
+	print("There are --add/--del arguments too. They are only supported as first argument!\n");
+	print("Calling --del without a txtvalue removes all records for the challenge hostname.\n\n");
 	print("It's required to place a file called .nc-ccp.ini in your home directory. Example configuration below:\n\n");
 	print("  username   = \"your customer ID\"\n  password   = \"your API password\"\n  token      = \"your API key\"\n  persistent = <true|false>\n\n");
 	print("Required:  PHP 5.5 or newer and SOAP module.\n");
-	print("BT & Wiki: https://github.com/froonix/acme-dns-nc\n");
+	print("BT & Wiki: https://github.com/froonix/acme-dns-nc\n\n");
+	print("Usage examples:\n\n");
+	print("  # Add TXT record _acme-challenge.example.org with content \"123\"\n");
+	printf("  %s example.org 123\n\n", $base);
+	print("  # Add TXT record _acme-challenge.example.org with content \"123\"\n");
+	printf("  %s --add example.org 123\n\n", $base);
+	print("  # Delete TXT record _acme-challenge.example.org with content \"123\"\n");
+	printf("  %s --del example.org 123\n\n", $base);
+	print("  # Delete all TXT records for _acme-challenge.example.org\n");
+	printf("  %s --del example.org\n\n", $base);
+	print("  # Delete all TXT records for _acme-challenge.example.org\n");
+	printf("  %s example.org\n\n", $base);
 	exit(1);
 }
 
-$hostname    = strtolower($argv[1]);
-$recordvalue = isset($argv[2]) ? $argv[2] : null;
+$hostname = strtolower($hostname);
+if(substr($hostname, 0, 16) === '_acme-challenge.')
+{
+	$hostname = substr($hostname, 16);
+}
 
 # TODO: Read path from ENV var?
 # ...
@@ -101,78 +125,26 @@ if($recordname === null)
 	throw new Exception(sprintf('Domain %s does not exist in this account', $hostname));
 }
 
-// Fetch all existing records.
-$records = $ncccp->getRecords($fulldomain);
-
-$oldrecords = [];
-$newrecords = [];
-$c = count($records);
-for($i = 0; $i < $c; $i++)
+if($mode === 'add')
 {
-	if(isset($records[$i]->type, $records[$i]->hostname) && strtoupper($records[$i]->type) === 'TXT' && strtolower($records[$i]->hostname) === $recordname)
-	{
-		$oldrecords[] = $records[$i];
-	}
-}
-unset($records);
-
-$c = count($oldrecords);
-if($recordvalue === null)
-{
-	if(isset($oldrecords[0]))
-	{
-		if($c > 1)
-		{
-			// There are multiple records! This is strange, but we can delete all of them.
-			fwrite(STDERR, "Warning: Multiple records found! Deleting all of them.\n");
-		}
-
-		$newrecords = $oldrecords;
-		for($i = 0; $i < $c; $i++)
-		{
-			// The record exists, we can delete it now.
-			$newrecords[$i]->deleterecord = true;
-		}
-	}
+	// We don't care if the record already exists. This is required for ACMEv2!
+	$ncccp->updateRecords($fulldomain, [(object) ['hostname' => $recordname, 'destination' => $recordvalue, 'type' => 'TXT']]);
 }
 else
 {
-	if($c > 1)
-	{
-		// There are multiple records! This is strange. Because we can't update
-		// all of them, let's delete it first and create a new one afterwards.
-		fwrite(STDERR, "Warning: Multiple records found! Deleting all of them.\n");
-		fwrite(STDERR, "         A new TXT record will be created afterwards.\n");
+	// Fetch all existing records with our desired conditions.
+	$records = $ncccp->getRecord($fulldomain, $recordname, 'TXT', $recordvalue);
 
-		$newrecords = $oldrecords;
+	if($c = count($records))
+	{
 		for($i = 0; $i < $c; $i++)
 		{
-			$newrecords[$i]->deleterecord = true;
+			$records[$i]->deleterecord = true;
 		}
 
-		$force = true;
+		// One or multiple records found. We can delete all of them.
+		$ncccp->updateRecords($fulldomain, $records);
 	}
-	else
-	{
-		$force = false;
-	}
-
-	if($force || !isset($oldrecords[0]->id))
-	{
-		// The record does not exist. We have to create it with challenge data.
-		$newrecords[] = (object) ['hostname' => $recordname, 'destination' => $recordvalue, 'type' => 'TXT'];
-	}
-	else
-	{
-		// The record already exists. Let's update the challenge data.
-		$newrecords = $oldrecords; $newrecords[0]->destination = $recordvalue;
-	}
-}
-unset($force, $c, $i);
-
-if(count($newrecords))
-{
-	$ncccp->updateRecords($fulldomain, $newrecords);
 }
 
 // Close API...
@@ -425,6 +397,24 @@ class NCCCP extends SoapClient
 		}
 	}
 
+	public function updateRecords($domain, $records, $return = false)
+	{
+		if(!is_array($records))
+		{
+			throw new InvalidArgumentException();
+		}
+
+		return $this->doRequest('updateDnsRecords',
+		[
+			'domainname'      => $domain,
+			'customernumber'  => $this->username,
+			'apikey'          => $this->token,
+			'apisessionid'    => $this->sid,
+			'clientrequestid' => $this->request,
+			'dnsrecordset'    => (object) ['dnsrecords' => $records],
+		], $return);
+	}
+
 	public function getZone($domain, $return = false)
 	{
 		return $this->doRequest('infoDnsZone',
@@ -467,22 +457,26 @@ class NCCCP extends SoapClient
 		return [];
 	}
 
-	public function updateRecords($domain, $records, $return = false)
+	public function getRecord($domain, $name, $type = null, $content = null, $return = false)
 	{
-		if(!is_array($records))
+		$name = strtolower((string) $name);
+
+		if(($records = $this->getRecords($domain, $return)) === false)
 		{
-			throw new InvalidArgumentException();
+			return false;
 		}
 
-		return $this->doRequest('updateDnsRecords',
-		[
-			'domainname'      => $domain,
-			'customernumber'  => $this->username,
-			'apikey'          => $this->token,
-			'apisessionid'    => $this->sid,
-			'clientrequestid' => $this->request,
-			'dnsrecordset'    => (object) ['dnsrecords' => $records],
-		], $return);
+		$result = [];
+		$c = count($records);
+		for($i = 0; $i < $c; $i++)
+		{
+			if(isset($records[$i]->type, $records[$i]->hostname, $records[$i]->destination) && strtolower($records[$i]->hostname) === $name && (!is_string($type) || strtoupper($records[$i]->type) === $type) && (!is_string($content) || $records[$i]->destination === $content))
+			{
+				$result[] = $records[$i];
+			}
+		}
+
+		return $result;
 	}
 }
 

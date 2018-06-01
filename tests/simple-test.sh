@@ -1,23 +1,29 @@
 #!/usr/bin/env bash
 ###############################################
 #                                             #
-# First simple test script for ACME-DNS-NC.   #
+# First simple test script for ACME-DNS-INWX. #
 # Try to add and delete 100 random records.   #
 #                                             #
-# Example: simple-test.sh example.org \       #
-#                 root-dns.netcup.net         #
+# Use --wildcard to test the new (ACMEv2)     #
+# handling with multiple records per host.    #
+#                                             #
+# Example: simple-test.sh --wildcard \        #
+#            example.org root-dns.netcup.net  #
 #                                             #
 ###############################################
 
 set -euf -o pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 
+if [[ "${1-}" == "--wildcard" ]]
+then V2=1; shift; else V2=0; fi
+
 DOMAIN=${1-}; NS=${2-DEFAULT}
 SCRIPT=${3-../scripts/acme-dns-nc}
 WAIT_TRIES=100; WAIT_DNS=12; WAIT_NEXT=5
 CHALLENGE_PREFIX="_acme-challenge"
 
-if [[ "$DOMAIN" == "" ]]; then echo "Usage: $0 <domain> [<primary-nameserver> [<path-to-script>]]" 1>&2; exit 1
+if [[ "$DOMAIN" == "" ]]; then echo "Usage: $0 [--wildcard] <domain> [<primary-nameserver> [<path-to-script>]]" 1>&2; exit 1
 elif [[ ! -x "$SCRIPT" ]]; then echo "Invalid path to script: $SCRIPT" 1>&2; exit 1; fi
 if [[ "$NS" == "DEFAULT" ]]; then NS=; else NS="@$NS"; fi
 
@@ -47,7 +53,16 @@ do
 
 	# Try to add the DNS record.
 	status "${YELLOW}ADD RR${RESET}" "$hostname"
-	return=0; "$SCRIPT" "$hostname" "$txtvalue" 1>/dev/null 2>>"$logfile" || return=$? && :
+
+	return=0
+	if [[ -n "$V2" ]]
+	then
+		"$SCRIPT" --add "$hostname" "$txtvalue-1" 1>/dev/null 2>>"$logfile" && \
+		"$SCRIPT" --add "$hostname" "$txtvalue-2" 1>/dev/null 2>>"$logfile" || \
+		return=$? && :
+	else
+		"$SCRIPT" "$hostname" "$txtvalue" 1>/dev/null 2>>"$logfile" || return=$? && :
+	fi
 
 	if [[ "$return" != "0" ]]
 	then
@@ -66,7 +81,21 @@ do
 		status "${YELLOW}CHK #1${RESET}" "$hostname"
 		return=0; dig +short "TXT" "$CHALLENGE_PREFIX.$hostname" "$NS" 1>"$tmpfile" 2>/dev/null || return=$? && :
 
-		if [[ "$return" == "0" && "$(cat "$tmpfile")" == "\"$txtvalue\"" ]]
+		result=0
+		if [[ -n "$V2" ]]
+		then
+			while IFS='' read -r line || [[ -n "$line" ]]
+			do
+				if [[ "$line" == "\"$txtvalue-1\"" ]];   then ((result+=1))
+				elif [[ "$line" == "\"$txtvalue-2\"" ]]; then ((result+=2))
+				else ((result+=10)); fi
+			done < "$tmpfile"
+		elif [[ "$(cat "$tmpfile")" == "\"$txtvalue\"" ]]
+		then
+			result=3;
+		fi
+
+		if [[ "$return" == "0" && "$result" -eq 3 ]]
 		then final=0; break; else final=1; fi
 	done
 
@@ -78,7 +107,16 @@ do
 
 	# Try to delete the DNS record.
 	status "${YELLOW}DEL RR${RESET}" "$hostname"
-	return=0; "$SCRIPT" "$hostname" 1>/dev/null 2>>"$logfile" || return=$? && :
+
+	return=0
+	if [[ -n "$V2" ]]
+	then
+		"$SCRIPT" --del "$hostname" "$txtvalue-1" 1>/dev/null 2>>"$logfile" && \
+		"$SCRIPT" --del "$hostname" "$txtvalue-2" 1>/dev/null 2>>"$logfile" || \
+		return=$? && :
+	else
+		"$SCRIPT" "$hostname" 1>/dev/null 2>>"$logfile" || return=$? && :
+	fi
 
 	if [[ "$return" != "0" ]]
 	then
