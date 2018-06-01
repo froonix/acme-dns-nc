@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 ###############################################
 #                                             #
-# First simple test script for ACME-DNS-INWX. #
+# First simple test script for ACME-DNS-NC.   #
 # Try to add and delete 100 random records.   #
 #                                             #
 # Use --wildcard to test the new (ACMEv2)     #
