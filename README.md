@@ -33,7 +33,7 @@ Important: This project is **not** affiliated with netcup GmbH!
 * [Wiki pages](https://github.com/froonix/acme-dns-nc/wiki)
 * [netcup Domains (DE)](https://www.netcup.de/bestellen/domainangebote.php?ref=13994)
 * [netcup Domains (EN)](https://www.netcup.eu/bestellen/domainangebote.php?ref=13994)
-* [netcup CCP-DNS-API](https://ccp.netcup.net/run/webservice/servers/endpoint.php)
+* [netcup CCP-DNS-API](https://www.netcup-wiki.de/wiki/DNS_API)
 * [Let's Encrypt](https://letsencrypt.org/)
 
 [1]: https://letsencrypt.org/docs/client-options/
