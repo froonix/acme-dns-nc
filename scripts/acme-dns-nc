@@ -4,7 +4,7 @@
  *                                                                    *
  *                            ACME-DNS-NC                             *
  * ------------------------------------------------------------------ *
- *                        v0.2.0 (2018-06-03)                         *
+ *                        v0.2.1 (2018-07-21)                         *
  *                                                                    *
  * Author:  Christian Schrötter <cs@fnx.li>                           *
  * License: GNU GENERAL PUBLIC LICENSE (Version 3)                    *
@@ -19,9 +19,9 @@ if(version_compare(PHP_VERSION, '5.5.0', '<'))
 {
 	throw new Exception('PHP 5.5.0 or newer is required');
 }
-else if(!extension_loaded('soap'))
+else if(!extension_loaded('soap') || !extension_loaded('json'))
 {
-	throw new Exception('Required module not found: SOAP');
+	throw new Exception('Required modules not found: SOAP and JSON');
 }
 else if(PHP_SAPI !== 'cli')
 {
@@ -67,7 +67,7 @@ if($mode === null || ($mode === 'add' && ($hostname === null || $recordvalue ===
 	print("Calling --del without a txtvalue removes all records for the challenge hostname.\n\n");
 	print("It's required to place a file called .nc-ccp.ini in your home directory. Example configuration below:\n\n");
 	print("  username   = \"your customer ID\"\n  password   = \"your API password\"\n  token      = \"your API key\"\n  persistent = <true|false>\n\n");
-	print("Required:  PHP 5.5 or newer and SOAP module.\n");
+	print("Required:  PHP 5.5 or newer and SOAP/JSON modules.\n");
 	print("BT & Wiki: https://github.com/froonix/acme-dns-nc\n\n");
 	print("Usage examples:\n\n");
 	print("  # Add TXT record _acme-challenge.example.org with content \"123\"\n");
