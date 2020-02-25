@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+
+# --manual-auth-hook
+if [ -n "${CERTBOT_DOMAIN}" ] && [ -n "${CERTBOT_VALIDATION}" ]
+then
+	"$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/acme-dns-nc" --add "${CERTBOT_DOMAIN}" "${CERTBOT_VALIDATION}"
+
+	# netcup updates DNS data every 5 minutes, 1 extra minute safety margin
+	#sleep $(( 6 - $(date "+%_M" -d "-5 minutes") % 5 ))m
+	sleep 10m
+else
+	echo "env variables missing"
+	false
+fi
