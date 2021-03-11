@@ -80,8 +80,9 @@ if($mode === null || ($mode === 'add' && ($hostname === null || $recordvalue ===
 	print("Calling --del without a txtvalue removes all records for the challenge hostname.\n\n");
 	print("It's required to place a file called .nc-ccp.ini in your home directory. Example configuration below:\n\n");
 	print("  username   = \"your customer ID\"\n  password   = \"your API password\"\n  token      = \"your API key\"\n  persistent = <true|false>\n\n");
-	print("Required:  PHP 5.5 or newer and SOAP/JSON modules.\n");
-	print("BT & Wiki: https://github.com/froonix/acme-dns-nc\n\n");
+	print("Required:    PHP 5.5 or newer and SOAP/JSON modules.\n");
+	print("Recommended: PHP INTL extension for IDN (Punycode) support.\n");
+	print("BT & Wiki:   https://github.com/froonix/acme-dns-nc\n\n");
 	print("Usage examples:\n\n");
 	print("  # Add TXT record _acme-challenge.example.org with content \"123\"\n");
 	printf("  %s example.org 123\n\n", $base);
@@ -208,6 +209,22 @@ exit(0);
 ########################################################################
 #                            EXTERNAL LIBS                             #
 ########################################################################
+
+function idn_to_ascii_wrapper($domain)
+{
+	$domain = (string) $domain;
+
+	if(!function_exists('idn_to_utf8'))
+	{
+		return $domain;
+	}
+	else if(defined('INTL_IDNA_VARIANT_UTS46'))
+	{
+		return idn_to_ascii($domain, IDNA_DEFAULT, INTL_IDNA_VARIANT_UTS46);
+	}
+
+	return idn_to_ascii($domain);
+}
 
 // Convert PHP errors to exceptions. This is very usefull!
 function error_handler($severity, $message, $file, $line)
@@ -458,7 +475,7 @@ class NCCCP extends SoapClient
 
 		return $this->doRequest('updateDnsRecords',
 		[
-			'domainname'      => $domain,
+			'domainname'      => idn_to_ascii_wrapper($domain),
 			'customernumber'  => $this->username,
 			'apikey'          => $this->token,
 			'apisessionid'    => $this->sid,
@@ -471,7 +488,7 @@ class NCCCP extends SoapClient
 	{
 		return $this->doRequest('infoDnsZone',
 		[
-			'domainname'      => $domain,
+			'domainname'      => idn_to_ascii_wrapper($domain),
 			'customernumber'  => $this->username,
 			'apikey'          => $this->token,
 			'apisessionid'    => $this->sid,
@@ -485,7 +502,7 @@ class NCCCP extends SoapClient
 		{
 			$result = $this->doRequest('infoDnsRecords',
 			[
-				'domainname'      => $domain,
+				'domainname'      => idn_to_ascii_wrapper($domain),
 				'customernumber'  => $this->username,
 				'apikey'          => $this->token,
 				'apisessionid'    => $this->sid,
