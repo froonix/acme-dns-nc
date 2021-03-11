@@ -4,7 +4,7 @@
  *                                                                    *
  *                            ACME-DNS-NC                             *
  * ------------------------------------------------------------------ *
- *                        v0.2.1 (2018-07-21)                         *
+ *                      v0.2.2-DEV (XXXX-XX-XX)                       *
  *                                                                    *
  * Author:  Christian Schrötter <cs@fnx.li>                           *
  * License: GNU GENERAL PUBLIC LICENSE (Version 3)                    *
@@ -34,11 +34,11 @@ $base = array_shift($argv);
 if(isset($argv[0]) && substr($argv[0], 0, 2) === '--')
 {
 	$_ = substr(array_shift($argv), 2);
-	if(in_array($_, ['add', 'del']))
+	if(in_array($_, ['add', 'del', 'cleanup'], true))
 	{
 		$mode = $_;
-		unset($_);
 	}
+	unset($_);
 }
 else if(isset($argv[1]))
 {
@@ -49,18 +49,31 @@ else if(isset($argv[0]))
 	$mode = 'del';
 }
 
-$hostname    = array_shift($argv);
-$recordvalue = array_shift($argv);
-
-if(count($argv))
+if($mode === 'cleanup')
 {
-	$mode = null;
+	$domains = $argv;
+
+	if(!count($domains))
+	{
+		$mode = null;
+	}
+}
+else
+{
+	$hostname    = array_shift($argv);
+	$recordvalue = array_shift($argv);
+
+	if(count($argv))
+	{
+		$mode = null;
+	}
 }
 
 if($mode === null || ($mode === 'add' && ($hostname === null || $recordvalue === null)) || ($mode === 'del' && $hostname === null))
 {
 	print("[ACME-DNS-NC] dns-01 challenge helper script for netcup.de CCP-DNS-API\n");
-	printf("Usage: %s [--{add|del}] <hostname> [<txtvalue>]\n\n", $base);
+	printf("Usage: %s [--{add|del}] <hostname> [<txtvalue>]\n", $base);
+	printf("       %s --cleanup <domain> ...\n\n", $base);
 	print("_acme-challenge will be prepended to the hostname. Subdomains are fully supported.\n");
 	print("Without a txtvalue, the corresponding record will be deleted! TTL not supported.\n\n");
 	print("There are --add/--del arguments too. They are only supported as first argument!\n");
@@ -80,13 +93,18 @@ if($mode === null || ($mode === 'add' && ($hostname === null || $recordvalue ===
 	printf("  %s --del example.org\n\n", $base);
 	print("  # Delete all TXT records for _acme-challenge.example.org\n");
 	printf("  %s example.org\n\n", $base);
+	print("  # Delete all challenge records at example.org (incl. subdomains)\n");
+	printf("  %s --cleanup example.org\n\n", $base);
 	exit(1);
 }
 
-$hostname = strtolower($hostname);
-if(substr($hostname, 0, 16) === '_acme-challenge.')
+if($mode !== 'cleanup')
 {
-	$hostname = substr($hostname, 16);
+	$hostname = strtolower($hostname);
+	if(substr($hostname, 0, 16) === '_acme-challenge.')
+	{
+		$hostname = substr($hostname, 16);
+	}
 }
 
 # TODO: Read path from ENV var?
@@ -103,47 +121,81 @@ $ncccp->setAuthData($ini['username'], $ini['password'], $ini['token']);
 $ncccp->setSessionStorage($ini['persistent']);
 $ncccp->login();
 
-// Split domain name to subdomains.
-$hostparts = explode('.', $hostname);
-$fulldomain = array_pop($hostparts);
-$recordname = null;
-
-while(($nextpart = array_pop($hostparts)) !== null)
+if($mode === 'cleanup')
 {
-	$fulldomain = sprintf('%s.%s', $nextpart, $fulldomain);
-	if(($domain = $ncccp->getZone($fulldomain, true)) !== false)
+	$deleted = 0;
+	foreach($domains as $domain)
 	{
-		// We found the domain! Prepend challenge name.
-		array_unshift($hostparts, '_acme-challenge');
-		$recordname = implode('.', $hostparts);
-		break;
+		$records = $ncccp->getRecord($domain, null, 'TXT');
+
+		if($c = count($records))
+		{
+			for($i = 0; $i < $c; $i++)
+			{
+				if(preg_match('/^_acme-challenge(\..+|$)/', $records[$i]->hostname))
+				{
+					printf("Deleting TXT record for %s.%s: %s\n", $records[$i]->hostname, $domain, $records[$i]->destination);
+					$records[$i]->deleterecord = true;
+					$deleted++;
+					continue;
+				}
+
+				unset($records[$i]);
+			}
+
+			if(count($records))
+			{
+				$ncccp->updateRecords($domain, array_values($records));
+			}
+		}
 	}
-}
 
-if($recordname === null)
-{
-	throw new Exception(sprintf('Domain %s does not exist in this account', $hostname));
-}
-
-if($mode === 'add')
-{
-	// We don't care if the record already exists. This is required for ACMEv2!
-	$ncccp->updateRecords($fulldomain, [(object) ['hostname' => $recordname, 'destination' => $recordvalue, 'type' => 'TXT']]);
+	printf("%s%d ACME TXT record(s) deleted!\n", ($deleted ? "\n" : ""), $deleted);
 }
 else
 {
-	// Fetch all existing records with our desired conditions.
-	$records = $ncccp->getRecord($fulldomain, $recordname, 'TXT', $recordvalue);
+	// Split domain name to subdomains.
+	$hostparts = explode('.', $hostname);
+	$fulldomain = array_pop($hostparts);
+	$recordname = null;
 
-	if($c = count($records))
+	while(($nextpart = array_pop($hostparts)) !== null)
 	{
-		for($i = 0; $i < $c; $i++)
+		$fulldomain = sprintf('%s.%s', $nextpart, $fulldomain);
+		if(($domain = $ncccp->getZone($fulldomain, true)) !== false)
 		{
-			$records[$i]->deleterecord = true;
+			// We found the domain! Prepend challenge name.
+			array_unshift($hostparts, '_acme-challenge');
+			$recordname = implode('.', $hostparts);
+			break;
 		}
+	}
 
-		// One or multiple records found. We can delete all of them.
-		$ncccp->updateRecords($fulldomain, $records);
+	if($recordname === null)
+	{
+		throw new Exception(sprintf('Domain %s does not exist in this account', $hostname));
+	}
+
+	if($mode === 'add')
+	{
+		// We don't care if the record already exists. This is required for ACMEv2!
+		$ncccp->updateRecords($fulldomain, [(object) ['hostname' => $recordname, 'destination' => $recordvalue, 'type' => 'TXT']]);
+	}
+	else
+	{
+		// Fetch all existing records with our desired conditions.
+		$records = $ncccp->getRecord($fulldomain, $recordname, 'TXT', $recordvalue);
+
+		if($c = count($records))
+		{
+			for($i = 0; $i < $c; $i++)
+			{
+				$records[$i]->deleterecord = true;
+			}
+
+			// One or multiple records found. We can delete all of them.
+			$ncccp->updateRecords($fulldomain, $records);
+		}
 	}
 }
 
@@ -453,14 +505,20 @@ class NCCCP extends SoapClient
 				throw $e;
 			}
 		}
+		catch(RuntimeException $e)
+		{
+			// RuntimeException: [5029] Can not get DNS records for zone. Domain not found.
+			if($e->getCode() !== 5029)
+			{
+				throw $e;
+			}
+		}
 
 		return [];
 	}
 
-	public function getRecord($domain, $name, $type = null, $content = null, $return = false)
+	public function getRecord($domain, $name = null, $type = null, $content = null, $return = false)
 	{
-		$name = strtolower((string) $name);
-
 		if(($records = $this->getRecords($domain, $return)) === false)
 		{
 			return false;
@@ -470,7 +528,13 @@ class NCCCP extends SoapClient
 		$c = count($records);
 		for($i = 0; $i < $c; $i++)
 		{
-			if(isset($records[$i]->type, $records[$i]->hostname, $records[$i]->destination) && strtolower($records[$i]->hostname) === $name && (!is_string($type) || strtoupper($records[$i]->type) === $type) && (!is_string($content) || $records[$i]->destination === $content))
+			if
+			(
+				isset($records[$i]->hostname, $records[$i]->type, $records[$i]->destination)
+				&& (!is_string($name)    || strtolower($records[$i]->hostname)   === strtolower($name))
+				&& (!is_string($type)    || strtoupper($records[$i]->type)       === strtoupper($type))
+				&& (!is_string($content) ||            $records[$i]->destination === $content)
+			)
 			{
 				$result[] = $records[$i];
 			}
