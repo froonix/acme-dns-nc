@@ -20,7 +20,7 @@ then V2=1; shift; else V2=0; fi
 
 DOMAIN=${1-}; NS=${2-DEFAULT}
 SCRIPT=${3-../scripts/acme-dns-nc}
-WAIT_TRIES=100; WAIT_DNS=12; WAIT_NEXT=5
+WAIT_TRIES=333; WAIT_DNS=12; WAIT_NEXT=5
 CHALLENGE_PREFIX="_acme-challenge"
 
 if [[ "$DOMAIN" == "" ]]; then echo "Usage: $0 [--wildcard] <domain> [<primary-nameserver> [<path-to-script>]]" 1>&2; exit 1
