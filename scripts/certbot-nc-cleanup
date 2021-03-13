@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+
+# --manual-cleanup-hook
+if [ -n "${CERTBOT_DOMAIN}" ] && [ -n "${CERTBOT_VALIDATION}" ]
+then
+	"$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/acme-dns-nc" --del "${CERTBOT_DOMAIN}" "${CERTBOT_VALIDATION}"
+else
+	echo "env variables missing"
+	false
+fi
