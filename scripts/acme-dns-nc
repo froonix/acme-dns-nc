@@ -253,7 +253,6 @@ class NCCCP extends SoapClient
 		parent::__construct('https://ccp.netcup.net/run/webservice/servers/endpoint.php?WSDL',
 		[
 			'cache_wsdl'  => WSDL_CACHE_DISK, // <-- PHP Bug #72937
-			'ssl_method'  => SOAP_SSL_METHOD_TLS,
 			'compression' => true,
 			'keep_alive'  => true,
 			'exceptions'  => true,
